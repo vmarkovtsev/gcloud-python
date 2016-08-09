@@ -110,6 +110,10 @@
   logging-entries
   logging-metric
   logging-sink
+  logging-handlers
+  logging-transports-sync
+  logging-transports-thread
+  logging-transports-base
 
 .. toctree::
   :maxdepth: 0

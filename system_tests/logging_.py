@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import time
 
 import unittest
 
+import gcloud.logging
+import gcloud.logging.handlers.handlers
+from gcloud.logging.handlers.handlers import CloudLoggingHandler
+from gcloud.logging.handlers.transports import SyncTransport
 from gcloud import _helpers
 from gcloud.environment_vars import TESTS_PROJECT
-from gcloud import logging
-
 from system_test_utils import unique_resource_id
-
 
 _RESOURCE_ID = unique_resource_id('-')
 DEFAULT_METRIC_NAME = 'system-tests-metric%s' % (_RESOURCE_ID,)
@@ -71,13 +73,14 @@ class Config(object):
 
 def setUpModule():
     _helpers.PROJECT = TESTS_PROJECT
-    Config.CLIENT = logging.Client()
+    Config.CLIENT = gcloud.logging.Client()
 
 
 class TestLogging(unittest.TestCase):
 
     def setUp(self):
         self.to_delete = []
+        self._handlers_cache = logging.getLogger().handlers[:]
 
     def tearDown(self):
         from gcloud.exceptions import NotFound
@@ -92,6 +95,7 @@ class TestLogging(unittest.TestCase):
                         time.sleep(backoff_intervals.pop(0))
                     else:
                         raise
+        logging.getLogger().handlers = self._handlers_cache[:]
 
     @staticmethod
     def _logger_name():
@@ -101,8 +105,10 @@ class TestLogging(unittest.TestCase):
         TEXT_PAYLOAD = 'System test: test_log_text'
         logger = Config.CLIENT.logger(self._logger_name())
         self.to_delete.append(logger)
+
         logger.log_text(TEXT_PAYLOAD)
         entries, _ = _retry_backoff(_has_entries, logger.list_entries)
+
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].payload, TEXT_PAYLOAD)
 
@@ -147,6 +153,69 @@ class TestLogging(unittest.TestCase):
 
         logger.log_struct(JSON_PAYLOAD)
         entries, _ = _retry_backoff(_has_entries, logger.list_entries)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].payload, JSON_PAYLOAD)
+
+    def test_log_handler_async(self):
+        LOG_MESSAGE = 'It was the worst of times'
+
+        handler = CloudLoggingHandler(Config.CLIENT)
+        # only create the logger to delete, hidden otherwise
+        logger = Config.CLIENT.logger(handler.name)
+        self.to_delete.append(logger)
+
+        cloud_logger = logging.getLogger(handler.name)
+        cloud_logger.addHandler(handler)
+        cloud_logger.warn(LOG_MESSAGE)
+        entries, _ = _retry_backoff(_has_entries, logger.list_entries)
+        JSON_PAYLOAD = {
+            'message': LOG_MESSAGE,
+            'python_logger': handler.name
+        }
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].payload, JSON_PAYLOAD)
+
+    def test_log_handler_sync(self):
+        LOG_MESSAGE = 'It was the best of times.'
+
+        handler = CloudLoggingHandler(Config.CLIENT,
+                                      name=self._logger_name(),
+                                      transport=SyncTransport)
+
+        # only create the logger to delete, hidden otherwise
+        logger = Config.CLIENT.logger(handler.name)
+        self.to_delete.append(logger)
+
+        LOGGER_NAME = "mylogger"
+        cloud_logger = logging.getLogger(LOGGER_NAME)
+        cloud_logger.addHandler(handler)
+        cloud_logger.warn(LOG_MESSAGE)
+
+        entries, _ = _retry_backoff(_has_entries, logger.list_entries)
+        JSON_PAYLOAD = {
+            'message': LOG_MESSAGE,
+            'python_logger': LOGGER_NAME
+        }
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].payload, JSON_PAYLOAD)
+
+    def test_log_root_handler(self):
+        LOG_MESSAGE = 'It was the best of times.'
+
+        handler = CloudLoggingHandler(Config.CLIENT, name=self._logger_name())
+        # only create the logger to delete, hidden otherwise
+        logger = Config.CLIENT.logger(handler.name)
+        self.to_delete.append(logger)
+
+        gcloud.logging.handlers.handlers.setup_logging(handler)
+        logging.warn(LOG_MESSAGE)
+
+        entries, _ = _retry_backoff(_has_entries, logger.list_entries)
+        JSON_PAYLOAD = {
+            'message': LOG_MESSAGE,
+            'python_logger': 'root'
+        }
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].payload, JSON_PAYLOAD)
